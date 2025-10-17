@@ -146,7 +146,6 @@ if process_btn:
                 excel_buffer = BytesIO()
                 with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
                     df.to_excel(writer, index=False, sheet_name="extracted")
-                    writer.save()
                 excel_buffer.seek(0)
 
                 csv_buffer = BytesIO()
