@@ -17,7 +17,7 @@ def extract_text_from_pdf_bytes(file_bytes):
             for page in pdf.pages:
                 page_text = page.extract_text()
                 if page_text:
-                text += page_text + "\n"
+                    text += page_text + "\n"
     except Exception as e:
         st.error(f"Error reading PDF: {e}")
     return text
