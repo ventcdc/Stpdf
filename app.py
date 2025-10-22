@@ -12,14 +12,12 @@ st.set_page_config(page_title="Invoice Extractor — Sciex", layout="wide", page
 def extract_text_from_pdf_bytes(file_bytes):
     text = ""
     try:
-        for filname in os.listdir(file_bytes):
-           if filname.endswith(".pdf"):
-               pdf_path=os.path.join(pdf_folder,filname)
-               with pdfplumber.open(BytesIO(pdf_path)) as pdf:
-                 for page in pdf.pages:
-                   page_text = page.extract_text()
-                   if page_text:
-                    text += page_text + "\n"
+       
+         with pdfplumber.open(BytesIO(file_bytes)) as pdf:
+            for page in pdf.pages:
+                page_text = page.extract_text()
+                if page_text:
+                text += page_text + "\n"
     except Exception as e:
         st.error(f"Error reading PDF: {e}")
     return text
