@@ -8,12 +8,11 @@ import os
 
 st.set_page_config(page_title="Invoice Extractor — Sciex", layout="wide", page_icon="📄")
 
-# --------------------- Helper functions (based on uploaded backend) ---------------------
+# --------------------- Helper functions ---------------------
 def extract_text_from_pdf_bytes(file_bytes):
     text = ""
     try:
-       
-         with pdfplumber.open(BytesIO(file_bytes)) as pdf:
+        with pdfplumber.open(BytesIO(file_bytes)) as pdf:
             for page in pdf.pages:
                 page_text = page.extract_text()
                 if page_text:
@@ -56,7 +55,7 @@ def extract_mace(text):
         "DATE": date_pattern.search(text).group(1) if date_pattern.search(text) else None,
         "NO.": invoice_no_pattern.search(text).group(1) if invoice_no_pattern.search(text) else None,
         "P.O. NO.": po_no_pattern.search(text).group(1) if po_no_pattern.search(text) else None,
-        "TOTAL USD": amount_pattern.search(text).group(1) if amount_pattern.search(text) else None
+        "Total Invoice Value(USD)": amount_pattern.search(text).group(1) if amount_pattern.search(text) else None
     }
 
 EXTRACTORS = {
@@ -71,6 +70,7 @@ st.sidebar.markdown("Choose customer type, upload PDFs, and process to get an Ex
 
 customer_type = st.sidebar.selectbox("Customer type", ["Novanta", "Cronologic", "Mace"])
 uploaded_files = st.sidebar.file_uploader("Upload PDF files", type=["pdf"], accept_multiple_files=True)
+ex_rate = st.sidebar.number_input("Enter Exchange Rate (EX-RATE)", min_value=0.0, step=0.01, format="%.4f")
 normalize_names = st.sidebar.checkbox("Normalize column names to lowercase and underscores", value=False)
 show_logs = st.sidebar.checkbox("Show extraction logs", value=True)
 
@@ -81,7 +81,7 @@ st.sidebar.markdown("Made for Sciex invoice extraction. Deploy on Streamlit Clou
 st.title("📄 Invoice Extractor — Sciex")
 st.write("Upload PDFs in the sidebar. Choose the correct customer type and click **Process** below.")
 
-# Preview uploaded files with icons
+# Preview uploaded files
 if uploaded_files:
     st.write("### Uploaded files")
     cols = st.columns(3)
@@ -117,19 +117,17 @@ if process_btn:
                 text = extract_text_from_pdf_bytes(file_bytes)
                 row = extractor(text)
                 row["source_file"] = uploaded_file.name
-                # capture simple normalization/cleanup
-                # convert date formats if possible
-                for k,v in row.items():
+                for k, v in row.items():
                     if isinstance(v, str):
                         row[k] = v.strip()
                 results.append(row)
                 logs.append(f"✅ {uploaded_file.name}: extracted {len([x for x in row.values() if x])} fields")
             except Exception as e:
                 logs.append(f"❌ {uploaded_file.name}: error {e}")
-
-            progress.progress(int((idx/total)*100))
+            progress.progress(int((idx / total) * 100))
 
         status_area.success("Processing complete.")
+
         if show_logs:
             st.subheader("Logs")
             for l in logs:
@@ -142,19 +140,49 @@ if process_btn:
 
             with result_area:
                 st.subheader("Extracted Data Preview")
+
+                # 💱 Add EX-RATE calculation
+                if ex_rate > 0 and "Total Invoice Value(USD)" in df.columns:
+                    df["Total Invoice Value(USD)"] = (
+                        df["Total Invoice Value(USD)"]
+                        .astype(str)
+                        .str.replace(",", "", regex=False)
+                        .astype(float)
+                    )
+                    df["EX-RATE"] = ex_rate
+                    df["Total Invoice Value(SGD)"] = df["Total Invoice Value(USD)"] * ex_rate
+
+                    # Format for display
+                    df["Total Invoice Value(USD)"] = df["Total Invoice Value(USD)"].map(lambda x: f"{x:,.2f}")
+                    df["Total Invoice Value(SGD)"] = df["Total Invoice Value(SGD)"].map(lambda x: f"{x:,.2f}")
+                elif ex_rate == 0:
+                    st.info("Enter a valid EX-RATE in the sidebar to calculate SGD values.")
+                else:
+                    st.warning("Column 'Total Invoice Value(USD)' not found in extracted data.")
+
                 st.dataframe(df)
 
-                # Let user download Excel or CSV
+                # Prepare files for download (numeric-safe)
+                df_export = df.copy()
+                for col in ["Total Invoice Value(USD)", "Total Invoice Value(SGD)"]:
+                    if col in df_export.columns:
+                        df_export[col] = (
+                            df_export[col]
+                            .astype(str)
+                            .str.replace(",", "", regex=False)
+                            .astype(float)
+                        )
+
                 excel_buffer = BytesIO()
                 with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
-                    df.to_excel(writer, index=False, sheet_name="extracted")
+                    df_export.to_excel(writer, index=False, sheet_name="extracted")
                 excel_buffer.seek(0)
 
                 csv_buffer = BytesIO()
-                csv_buffer.write(df.to_csv(index=False).encode("utf-8"))
+                csv_buffer.write(df_export.to_csv(index=False).encode("utf-8"))
                 csv_buffer.seek(0)
 
-                col1, col2 = st.columns([1,1])
+                col1, col2 = st.columns([1, 1])
                 with col1:
                     st.download_button("📥 Download Excel", data=excel_buffer.getvalue(),
                                        file_name=f"extracted_invoices_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
@@ -163,6 +191,5 @@ if process_btn:
                     st.download_button("📄 Download CSV", data=csv_buffer.getvalue(),
                                        file_name=f"extracted_invoices_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
                                        mime='text/csv')
-
         else:
-            st.info("No fields were extracted from the uploaded files. Try a different customer type or check the PDFs.")
+            st.info("No fields were extracted. Try a different customer type or check the PDFs.")
