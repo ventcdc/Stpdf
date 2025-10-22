@@ -5,9 +5,9 @@ import pandas as pd
 from io import BytesIO
 from datetime import datetime
 
-st.set_page_config(page_title="Invoice Extractor — Mace (Sciex)", layout="wide", page_icon="📄")
+st.set_page_config(page_title="Invoice Extractor — Sciex", layout="wide", page_icon="📄")
 
-# --------------------- Helper Functions ---------------------
+# --------------------- PDF TEXT EXTRACTION ---------------------
 def extract_text_from_pdf_bytes(file_bytes):
     """Extract all text from uploaded PDF file."""
     text = ""
@@ -22,15 +22,9 @@ def extract_text_from_pdf_bytes(file_bytes):
     return text
 
 
+# --------------------- CUSTOMER EXTRACTION FUNCTIONS ---------------------
 def extract_mace_multi(text):
-    """
-    Extract multiple invoices from a Mace PDF.
-    Each invoice typically contains:
-    - P.O. NO.
-    - Sciex PO
-    - Date
-    - TOTAL USD
-    """
+    """Extract multiple invoices from Mace PDF."""
     pattern = re.compile(
         r"P\.O\. NO\.\s*(\d+).*?"          # P.O. NO.
         r"(\d{2}\s[A-Za-z]+\s\d{4}).*?"    # Date
@@ -52,22 +46,59 @@ def extract_mace_multi(text):
     return data
 
 
-# --------------------- Sidebar ---------------------
-st.sidebar.header("Controls")
-st.sidebar.markdown("Upload one or more Mace invoice PDFs and extract all invoices automatically.")
+def extract_novanta(text):
+    """Extract single invoice from Novanta PDF."""
+    invoice_date_pattern = re.compile(r"Date:\s*(\d{2}\/\d{2}\/\d{4})", re.IGNORECASE)
+    invoice_no_pattern = re.compile(r"Invoice ID:\s*(\d+)", re.IGNORECASE)
+    po_no_pattern = re.compile(r"ABSCIEX-S\s*(\d+)", re.IGNORECASE)
+    amount_pattern = re.compile(r"TOTAL AMOUNT DUE:\s*\$?([\d,\.]+)", re.IGNORECASE)
 
-uploaded_files = st.sidebar.file_uploader("Upload Mace PDF files", type=["pdf"], accept_multiple_files=True)
+    return [{
+        "Invoice Date": invoice_date_pattern.search(text).group(1) if invoice_date_pattern.search(text) else None,
+        "Invoice NO": invoice_no_pattern.search(text).group(1) if invoice_no_pattern.search(text) else None,
+        "Sciex PO": po_no_pattern.search(text).group(1) if po_no_pattern.search(text) else None,
+        "Total Invoice Value(USD)": amount_pattern.search(text).group(1) if amount_pattern.search(text) else None
+    }]
+
+
+def extract_cronologic(text):
+    """Extract single invoice from Cronologic PDF."""
+    date_pattern = re.compile(r"Date\s*[:\-]?\s*(\d{4}\-\d{2}\-\d{2})", re.IGNORECASE)
+    invoice_no_pattern = re.compile(r"Invoice No\.?\s*[:\-]?\s*(\d+)", re.IGNORECASE)
+    po_no_pattern = re.compile(r"PO-?(\d+)", re.IGNORECASE)
+    amount_pattern = re.compile(r"Amount for Payment\s*[:\-]?\s*\$?([\d,\.]+)", re.IGNORECASE)
+
+    return [{
+        "Invoice Date": date_pattern.search(text).group(1) if date_pattern.search(text) else None,
+        "Invoice NO": invoice_no_pattern.search(text).group(1) if invoice_no_pattern.search(text) else None,
+        "Sciex PO": po_no_pattern.search(text).group(1) if po_no_pattern.search(text) else None,
+        "Total Invoice Value(USD)": amount_pattern.search(text).group(1) if amount_pattern.search(text) else None
+    }]
+
+
+EXTRACTORS = {
+    "Mace": extract_mace_multi,
+    "Novanta": extract_novanta,
+    "Cronologic": extract_cronologic
+}
+
+# --------------------- SIDEBAR ---------------------
+st.sidebar.header("Controls")
+st.sidebar.markdown("Upload invoice PDFs and select the customer type to extract data automatically.")
+
+customer_type = st.sidebar.selectbox("Customer Type", ["Mace", "Novanta", "Cronologic"])
+uploaded_files = st.sidebar.file_uploader("Upload PDF files", type=["pdf"], accept_multiple_files=True)
 ex_rate = st.sidebar.number_input("Enter Exchange Rate (EX-RATE)", min_value=0.0, step=0.01, format="%.4f", value=0.0)
 normalize_names = st.sidebar.checkbox("Normalize column names (lowercase + underscores)", value=False)
 show_logs = st.sidebar.checkbox("Show extraction logs", value=True)
 
 st.sidebar.markdown("---")
-st.sidebar.markdown("Made for **Sciex** — Mace multi-invoice extractor.")
+st.sidebar.markdown("Made for **Sciex** — Multi-customer invoice extractor.")
 
 
-# --------------------- Main Layout ---------------------
-st.title("📄 Invoice Extractor — Mace (Sciex)")
-st.write("Upload PDFs in the sidebar, enter a valid **EX-RATE**, and click **Process** to extract all invoices.")
+# --------------------- MAIN LAYOUT ---------------------
+st.title("📄 Invoice Extractor — Sciex")
+st.write("Upload PDFs, choose **customer type**, and enter a valid **EX-RATE** before processing.")
 
 if uploaded_files:
     st.write("### Uploaded files")
@@ -78,77 +109,78 @@ if uploaded_files:
             st.markdown(f"**📕 {f.name}**")
             st.caption(f"Size: {len(f.getvalue())/1024:.1f} KB")
 else:
-    st.info("No PDF files uploaded yet. Use the sidebar to upload one or more Mace invoice PDFs.")
+    st.info("No PDF files uploaded yet. Use the sidebar to upload.")
 
 process_btn = st.button("Process Files", type="primary")
 
 status_area = st.empty()
 result_area = st.container()
 
+# --------------------- MAIN PROCESSING ---------------------
 if process_btn:
     if not uploaded_files:
         st.warning("Please upload one or more PDF files before processing.")
     elif ex_rate <= 0:
         st.error("❌ Please enter a valid EX-RATE (must be greater than 0) before processing.")
     else:
-        status_area.info("Starting extraction...")
+        status_area.info(f"Extracting data for **{customer_type}** invoices...")
         total_files = len(uploaded_files)
         progress = st.progress(0)
         results = []
         logs = []
+        extractor = EXTRACTORS.get(customer_type)
 
         for idx, uploaded_file in enumerate(uploaded_files, start=1):
             file_name = uploaded_file.name
             try:
                 text = extract_text_from_pdf_bytes(uploaded_file.getvalue())
-                extracted = extract_mace_multi(text)
-
-                if not extracted:
-                    logs.append(f"⚠️ {file_name}: No matches found.")
+                extracted_rows = extractor(text)
+                if not extracted_rows:
+                    logs.append(f"⚠️ {file_name}: No data found.")
                 else:
-                    for row in extracted:
-                        row["source_file"] = file_name
-                        results.append(row)
-                    logs.append(f"✅ {file_name}: {len(extracted)} invoices extracted.")
-
+                    results.extend(extracted_rows)
+                    logs.append(f"✅ {file_name}: {len(extracted_rows)} records extracted.")
             except Exception as e:
                 logs.append(f"❌ {file_name}: error - {e}")
             progress.progress(int((idx / total_files) * 100))
 
-        status_area.success("Extraction complete.")
+        status_area.success("✅ Extraction complete.")
 
         if show_logs:
             st.subheader("Logs")
-            for l in logs:
-                st.write(l)
+            for log in logs:
+                st.write(log)
 
         if results:
             df = pd.DataFrame(results)
 
             # Clean numeric column
-            df["Total Invoice Value(USD)"] = (
-                df["Total Invoice Value(USD)"]
-                .astype(str)
-                .str.replace(",", "", regex=False)
-                .astype(float)
-            )
+            usd_cols = [col for col in df.columns if "usd" in col.lower()]
+            if usd_cols:
+                usd_col = usd_cols[0]
+                df[usd_col] = (
+                    df[usd_col]
+                    .astype(str)
+                    .str.replace(",", "", regex=False)
+                    .astype(float, errors="ignore")
+                )
 
-            # Add EX-RATE and compute SGD
-            df["EX-RATE"] = ex_rate
-            df["Total Invoice Value(SGD)"] = df["Total Invoice Value(USD)"] * ex_rate
+                # Add EX-RATE and SGD calculation
+                df["EX-RATE"] = ex_rate
+                df["Total Invoice Value(SGD)"] = df[usd_col] * ex_rate
 
-            # Format values for display
-            df["Total Invoice Value(USD)"] = df["Total Invoice Value(USD)"].map(lambda x: f"{x:,.2f}")
-            df["Total Invoice Value(SGD)"] = df["Total Invoice Value(SGD)"].map(lambda x: f"{x:,.2f}")
+                # Format display
+                df[usd_col] = df[usd_col].map(lambda x: f"{x:,.2f}" if pd.notnull(x) else "")
+                df["Total Invoice Value(SGD)"] = df["Total Invoice Value(SGD)"].map(lambda x: f"{x:,.2f}" if pd.notnull(x) else "")
 
             if normalize_names:
-                df.columns = [c.strip().lower().replace(" ", "_").replace(".", "") for c in df.columns]
+                df.columns = [c.strip().lower().replace(" ", "_").replace(".", "").replace(":", "") for c in df.columns]
 
             with result_area:
-                st.subheader("Extracted Invoice Data")
+                st.subheader(f"Extracted Data — {customer_type}")
                 st.dataframe(df, use_container_width=True)
 
-                # Prepare files for download
+                # Prepare export (keep numeric values)
                 df_export = df.copy()
                 for col in ["Total Invoice Value(USD)", "Total Invoice Value(SGD)"]:
                     if col in df_export.columns:
@@ -173,16 +205,15 @@ if process_btn:
                     st.download_button(
                         "📥 Download Excel",
                         data=excel_buffer.getvalue(),
-                        file_name=f"mace_extracted_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                        file_name=f"{customer_type.lower()}_extracted_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
                         mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
                     )
                 with col2:
                     st.download_button(
                         "📄 Download CSV",
                         data=csv_buffer.getvalue(),
-                        file_name=f"mace_extracted_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                        file_name=f"{customer_type.lower()}_extracted_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
                         mime='text/csv'
                     )
-
         else:
-            st.info("No invoice data found in the uploaded files.")
+            st.info("No invoice data extracted from the uploaded files.")
